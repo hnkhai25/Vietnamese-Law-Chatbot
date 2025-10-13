@@ -1,0 +1,14 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+python-dotenv==1.0.1
+
+faiss-cpu==1.8.0.post1
+elasticsearch==8.14.0
+
+sentence-transformers==3.0.1
+torch>=2.2.0
+numpy==1.26.4
+tqdm==4.66.4
+
+ujson==5.10.0
