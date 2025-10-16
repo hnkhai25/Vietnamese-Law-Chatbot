@@ -32,6 +32,9 @@ reranker = ReRanker(settings.RERANK_MODEL, settings.USE_GPU)
 
 W_SEM = settings.HYBRID_W_SEM
 W_BM25 = settings.HYBRID_W_BM25
+@app.get("/")
+def root():
+    return {"message": "Vietnamese Law Chatbot API is running"}
 
 @app.get("/health")
 def health():
@@ -65,14 +68,14 @@ def index_docs(req: IndexRequest):
 
 @app.post("/search")
 def search(req: SearchRequest):
-    #  semantic
     q = embedder.encode_queries([req.query])
-    sem_scores, sem_idxs = faiss_index.index.search(q, max(req.k, 20))  # get more for hybrid/rerank
+    sem_scores, sem_idxs = faiss_index.index.search(q, max(req.k, 20))
     sem_scores, sem_idxs = sem_scores[0], sem_idxs[0]
 
     sem_hits = []
     for s, idx in zip(sem_scores, sem_idxs):
-        if idx == -1: continue
+        if idx == -1:
+            continue
         doc_id = faiss_index.id_map[idx]
         meta = faiss_index.meta_map[doc_id]
         sem_hits.append({
@@ -85,39 +88,55 @@ def search(req: SearchRequest):
     if req.mode == "semantic":
         return {"mode": "semantic", "results": sem_hits[:req.k]}
 
-    #  bm25
     bm_hits = es.search(req.query, k=max(req.k, 20))
-    # map for hybrid
+
+    if req.mode == "bm25":
+        return {"mode": "bm25", "results": bm_hits}
+
+    bm_scores = [b["score"] for b in bm_hits if "score" in b]
+    if bm_scores:
+        bm_min, bm_max = min(bm_scores), max(bm_scores)
+        for b in bm_hits:
+            if "score" in b:
+                b["score"] = (b["score"] - bm_min) / (bm_max - bm_min + 1e-8)
+
     bm_map = {d["doc_id"]: d for d in bm_hits}
 
-    #  hybrid weighting
     hybrid = []
     seen = set()
     for h in sem_hits:
         bm = bm_map.get(h["doc_id"])
-        bm_score = bm["score"] if bm else 0.0
+        bm_score = bm["score"] if bm and "score" in bm else 0.0
         final = W_SEM * h["score_semantic"] + W_BM25 * bm_score
-        hybrid.append({**h, "score_bm25": float(bm_score), "score_hybrid": float(final)})
+        hybrid.append({
+            **h,
+            "score_bm25": float(bm_score),
+            "score_hybrid": float(final)
+        })
         seen.add(h["doc_id"])
-    # add bm-only docs (not returned by semantic)
+
     for b in bm_hits:
-        if b["doc_id"] in seen: continue
+        if b["doc_id"] in seen:
+            continue
         final = W_SEM * 0.0 + W_BM25 * b["score"]
         hybrid.append({
-            "doc_id": b["doc_id"], "text": b["text"], "meta": b["meta"],
-            "score_semantic": 0.0, "score_bm25": float(b["score"]), "score_hybrid": float(final)
+            "doc_id": b["doc_id"],
+            "text": b["text"],
+            "meta": b["meta"],
+            "score_semantic": 0.0,
+            "score_bm25": float(b["score"]),
+            "score_hybrid": float(final)
         })
 
-    # sort by hybrid
     hybrid.sort(key=lambda x: x["score_hybrid"], reverse=True)
     hybrid_top = hybrid[:max(req.k, 10)]
 
     if req.mode == "hybrid":
         return {"mode": "hybrid", "results": hybrid_top[:req.k]}
 
-    #  re-rank on hybrid_top
-    reranked = reranker.rerank(req.query, hybrid_top, top_k=req.k)
+    reranked = reranker.rerank(req.query, hybrid_top)
     return {"mode": "hybrid_rerank", "results": reranked}
+
 # @app.post("/generate")
 # def generate(payload: dict):
 #     query = payload["query"]

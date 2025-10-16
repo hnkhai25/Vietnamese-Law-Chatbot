@@ -13,4 +13,5 @@ class IndexRequest(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     k: int = 5
-    mode: Literal["semantic", "hybrid", "hybrid_rerank"] = "semantic"
+    mode: Literal["semantic", "bm25", "hybrid", "hybrid_rerank"]
+
