@@ -11,4 +11,4 @@ def run(q):
             print(i, f"[{it.get('doc_id')}] {it['text'][:100]}...")
 
 if __name__ == "__main__":
-    run("RAG kết hợp những thành phần nào?")
+    run("RAG là gì?")
