@@ -1,9 +1,9 @@
 from fastapi import FastAPI
-from app.settings import settings
+from app.settings import config
 from app.schemas import IndexRequest, SearchRequest
 from app.core.embedding import Embedder
 from app.core.index_faiss import FaissIndex
-from app.core.chunking import simple_chunk
+from app.core.chunking import hierarchical_chunk
 from app.core.bm25_es import ESClient
 from app.core.rerank import ReRanker
 import uuid
@@ -13,15 +13,15 @@ import uuid
 
 app = FastAPI(title="Vietnamese Law Chatbot", version="1.0.0")
 
-embedder = Embedder(settings.EMBEDDING_MODEL, settings.USE_GPU, normalize=True)
-faiss_index = FaissIndex(settings.FAISS_DIR)
+embedder = Embedder(config.EMBEDDING_MODEL, config.USE_GPU, normalize=True)
+faiss_index = FaissIndex(config.FAISS_DIR)
 try:
     faiss_index.load()
 except Exception:
     pass
 
-es = ESClient(settings.ES_HOST, settings.ES_INDEX, settings.ES_USER, settings.ES_PASS)
-reranker = ReRanker(settings.RERANK_MODEL, settings.USE_GPU)
+es = ESClient(config.ES_HOST, config.ES_INDEX, config.ES_USER, config.ES_PASS)
+reranker = ReRanker(config.RERANK_MODEL, config.USE_GPU)
 # LLM_MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 # tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
 # llm = AutoModelForCausalLM.from_pretrained(
@@ -30,8 +30,8 @@ reranker = ReRanker(settings.RERANK_MODEL, settings.USE_GPU)
 #     device_map="cpu"
 # )
 
-W_SEM = settings.HYBRID_W_SEM
-W_BM25 = settings.HYBRID_W_BM25
+W_SEM = config.HYBRID_W_SEM
+W_BM25 = config.HYBRID_W_BM25
 @app.get("/")
 def root():
     return {"message": "Vietnamese Law Chatbot API is running"}
@@ -47,24 +47,36 @@ def index_docs(req: IndexRequest):
     for it in req.items:
         chunks = [it.text]
         if req.chunk:
-            chunks = simple_chunk(it.text, settings.CHUNK_MAX_TOKENS, settings.CHUNK_STRIDE)
+            chunks = hierarchical_chunk(
+                it.text,
+                parent_id=it.id,
+                child_size=config.CHUNK_CHILD_TOKENS if hasattr(config, "CHUNK_CHILD_TOKENS") else 128,
+                stride=config.CHUNK_STRIDE if hasattr(config, "CHUNK_STRIDE") else 64
+            )
+        for ch in chunks:
+                cid = ch["child_id"]
+                texts.append(ch["text"])
+                ids.append(cid)
 
-        for i, ch in enumerate(chunks):
-            cid = f"{it.id}::chunk:{i}"
-            texts.append(ch)
-            ids.append(cid)
-            meta = {"parent_id": it.id, "chunk_id": i}
-            if it.meta:
-                meta.update(it.meta)
-            metas.append({"text": ch, **meta})
+                meta = {
+                    "root_doc": it.id,
+                    "parent_id": it.id,
+                    "child_id": ch["child_id"],
+                    **(it.meta or {}),
+                    "text": ch["text"]
+                }
+                metas.append(meta)
+                es_docs.append({
+                    "id": cid,
+                    "text": ch["text"],
+                    "meta": {k: v for k, v in meta.items() if k != "text"}
+                })
 
-            es_docs.append({"id": cid, "text": ch, "meta": meta})
-
-    embs = embedder.encode_passages(texts)
-    faiss_index.add(embs, ids, metas)
-    faiss_index.save()
-    es.bulk_upsert(es_docs)
-    return {"indexed": len(ids)}
+        embs = embedder.encode_passages(texts)
+        faiss_index.add(embs, ids, metas)
+        faiss_index.save()
+        es.bulk_upsert(es_docs)
+        return {"indexed": len(ids)}
 
 @app.post("/search")
 def search(req: SearchRequest):
@@ -154,7 +166,7 @@ def search(req: SearchRequest):
 #     bm_hits = es.search(query, k=20) if es else []
 #     bm_map = {d["doc_id"]: d for d in bm_hits}
 
-#     W_SEM, W_BM25 = settings.HYBRID_W_SEM, settings.HYBRID_W_BM25
+#     W_SEM, W_BM25 = config.HYBRID_W_SEM, config.HYBRID_W_BM25
 #     pool = []
 #     for h in sem_hits:
 #         b = bm_map.get(h["doc_id"])

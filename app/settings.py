@@ -1,31 +1,34 @@
-from pydantic import Field
-from pydantic_settings import BaseSettings
 from pathlib import Path
+from pydantic_settings import BaseSettings
 
-class Settings(BaseSettings):
-    EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    RERANK_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+class ApplicationConfig(BaseSettings):
+    EMBEDDING_MODEL: str
+    RERANK_MODEL: str
 
-    HYBRID_W_SEM: float = 0.7
-    HYBRID_W_BM25: float = 0.3
+    HYBRID_W_SEM: float
+    HYBRID_W_BM25: float
+    
+    CHUNK_CHILD_TOKENS : int
+    CHUNK_MAX_TOKENS: int
+    CHUNK_STRIDE : int
 
-    FAISS_DIR: str = "indices/faiss"
+    FAISS_DIR: str
 
-    ES_HOST: str = "http://localhost:9200"
-    ES_INDEX: str = "corpus"
+    ES_HOST: str
+    ES_INDEX: str
     ES_USER: str | None = None
     ES_PASS: str | None = None
 
-    API_HOST: str = "0.0.0.0"
-    API_PORT: int = 8000
+    API_HOST: str
+    API_PORT: int
 
-    CHUNK_MAX_TOKENS: int = 256
-    CHUNK_STRIDE: int = 32
 
-    USE_GPU: bool = False
+    USE_GPU: bool
 
     class Config:
-        env_file = ".env"
+        env_file = "env.example"
+        env_file_encoding = "utf-8"
 
-settings = Settings()
-Path(settings.FAISS_DIR).mkdir(parents=True, exist_ok=True)
+
+config = ApplicationConfig()
+Path(config.FAISS_DIR).mkdir(parents=True, exist_ok=True)
