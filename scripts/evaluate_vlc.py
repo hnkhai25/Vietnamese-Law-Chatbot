@@ -1,15 +1,12 @@
 import ujson as json
 import numpy as np
-import random
-import os
 from tqdm import tqdm
-
+import os
 from app.core.embedding import Embedder
 from app.core.index_faiss import FaissIndex
 from app.core.bm25_es import ESClient
 from app.core.rerank import ReRanker
 from app.settings import config
-
 
 def read_jsonl(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -17,42 +14,30 @@ def read_jsonl(path):
             if line.strip():
                 yield json.loads(line)
 
-def recall_at_k(relevant_doc_id, retrieved_doc_ids, k):
-    """Trả về 1 nếu doc đúng nằm trong top-k"""
-    return 1.0 if relevant_doc_id in retrieved_doc_ids[:k] else 0.0
-
-def reciprocal_rank(relevant_doc_id, retrieved_doc_ids):
-    """MRR = 1 / rank của doc đúng"""
+def recall_at_k(relevant_doc_ids, retrieved_doc_ids, k):
+    for doc_id in retrieved_doc_ids[:k]:
+        if doc_id in relevant_doc_ids:
+            return 1.0
+    return 0.0
+def reciprocal_rank(relevant_doc_ids, retrieved_doc_ids):
     for rank, doc_id in enumerate(retrieved_doc_ids, start=1):
-        if doc_id == relevant_doc_id:
+        if doc_id in relevant_doc_ids:
             return 1.0 / rank
     return 0.0
 
 
 embedder = Embedder(config.EMBEDDING_MODEL, config.USE_GPU, normalize=True)
 faiss_index = FaissIndex(config.FAISS_DIR)
+es = ESClient(config.ES_HOST, config.ES_INDEX, config.ES_USER, config.ES_PASS)
+reranker = ReRanker(config.RERANK_MODEL, config.USE_GPU)
 try:
     faiss_index.load()
     print("FAISS index loaded.")
 except Exception as e:
     print(f"Không thể load FAISS index: {e}")
 
-es = ESClient(config.ES_HOST, config.ES_INDEX, config.ES_USER, config.ES_PASS)
-reranker = ReRanker(config.RERANK_MODEL, config.USE_GPU)
-
 W_SEM = config.HYBRID_W_SEM
 W_BM25 = config.HYBRID_W_BM25
-
-
-data = list(read_jsonl("data/corpus.jsonl"))
-random.shuffle(data)
-split_idx = int(len(data) * 0.7)
-train_data = data[:split_idx]
-val_data = data[split_idx:]
-for d in val_data:
-    d["query"] = d.get("meta", {}).get("query_example", "")
-    
-print(f"Train size: {len(train_data)} | Val size: {len(val_data)}")
 
 
 def search_semantic(query, k):
@@ -64,7 +49,7 @@ def search_semantic(query, k):
         if idx == -1:
             continue
         doc_id = faiss_index.id_map[idx]
-        results.append((doc_id, s))
+        results.append((doc_id, float(s)))
     return results
 
 def search_bm25(query, k):
@@ -88,41 +73,58 @@ def search_hybrid_rerank(query, k):
     reranked = reranker.rerank(query, docs)
     return [(r.get("doc_id"), r.get("score", 1.0)) for r in reranked[:k]]
 
+def evaluate(queries_path: str, k_values=[1, 3, 5, 10]):
+    queries = list(read_jsonl(queries_path))
+    print(f"Loaded {len(queries)} queries from {queries_path}")
 
-modes = ["semantic", "bm25", "hybrid", "hybrid_rerank"]
-k_values = [1, 3, 5, 10]
+    modes = ["semantic", "bm25", "hybrid", "hybrid_rerank"]
+    results = {m: {"recall": [], "mrr": []} for m in modes}
 
-results = {m: {"recall": [], "mrr": []} for m in modes}
+    for sample in tqdm(queries, desc="Evaluating"):
+        q = sample["query"]
+        relevant_doc_ids = set(sample.get("answers", []))
 
-for sample in tqdm(val_data, desc="Evaluating"):
-    q = sample["query"]
-    true_doc_id = sample.get("id") or None
+        if not q or not relevant_doc_ids:
+            continue
 
+        for mode in modes:
+            if mode == "semantic":
+                retrieved = search_semantic(q, 10)
+            elif mode == "bm25":
+                retrieved = search_bm25(q, 10)
+            elif mode == "hybrid":
+                retrieved = search_hybrid(q, 10)
+            else:
+                retrieved = search_hybrid_rerank(q, 10)
+
+            retrieved_ids = [r[0] for r in retrieved]
+            recall_vals = [recall_at_k(relevant_doc_ids, retrieved_ids, k) for k in k_values]
+            mrr_val = reciprocal_rank(relevant_doc_ids, retrieved_ids)
+
+            results[mode]["recall"].append(recall_vals)
+            results[mode]["mrr"].append(mrr_val)
+
+    print("\n Evaluation Results:")
     for mode in modes:
-        if mode == "semantic":
-            retrieved = search_semantic(q, 10)
-        elif mode == "bm25":
-            retrieved = search_bm25(q, 10)
-        elif mode == "hybrid":
-            retrieved = search_hybrid(q, 10)
-        else:
-            retrieved = search_hybrid_rerank(q, 10)
+        recall_arr = np.array(results[mode]["recall"])
+        if len(recall_arr) == 0:
+            print(f"\n {mode.upper()}  (no valid samples)")
+            continue
+        recall_mean = recall_arr.mean(axis=0)
+        mrr_mean = np.mean(results[mode]["mrr"])
 
-        retrieved_ids = [r[0] for r in retrieved]
-        recall_vals = [recall_at_k(true_doc_id, retrieved_ids, k) for k in k_values]
-        mrr_val = reciprocal_rank(true_doc_id, retrieved_ids)
-
-        results[mode]["recall"].append(recall_vals)
-        results[mode]["mrr"].append(mrr_val)
+        print(f"\n {mode.upper()} ")
+        for i, k in enumerate(k_values):
+            print(f"Recall@{k}: {recall_mean[i]:.3f}")
+        print(f"MRR: {mrr_mean:.3f}")
 
 
-print("\nEvaluation Results:")
-for mode in modes:
-    recall_arr = np.array(results[mode]["recall"])
-    recall_mean = recall_arr.mean(axis=0)
-    mrr_mean = np.mean(results[mode]["mrr"])
+if __name__ == "__main__":
+    import argparse
 
-    print(f"\n--- {mode.upper()} ---")
-    for i, k in enumerate(k_values):
-        print(f"Recall@{k}: {recall_mean[i]:.3f}")
-    print(f"MRR: {mrr_mean:.3f}")
+    parser = argparse.ArgumentParser(description="Evaluate retrieval models.")
+    parser.add_argument("--queries", type=str, default="data\queries.jsonl" , help="Path to queries_test.jsonl")
+    parser.add_argument("--k", type=int, nargs="+", default=[1, 3, 5, 10], help="List of k values")
+    args = parser.parse_args()
+
+    evaluate(args.queries, args.k)

@@ -25,6 +25,8 @@ class ApplicationConfig(BaseSettings):
 
     USE_GPU: bool
 
+    GEMINI_API_KEY: str
+
     class Config:
         env_file = "env.example"
         env_file_encoding = "utf-8"

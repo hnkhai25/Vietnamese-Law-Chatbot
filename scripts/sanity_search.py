@@ -11,4 +11,4 @@ def run(q):
             print(i, f"[{it.get('doc_id')}] {it['text'][:100]}...")
 
 if __name__ == "__main__":
-    run("RAG là gì?")
+    run("Công dân thực hiện dân chủ tại đâu?")

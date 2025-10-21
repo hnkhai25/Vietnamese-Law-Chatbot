@@ -7,9 +7,8 @@ from app.core.chunking import hierarchical_chunk
 from app.core.bm25_es import ESClient
 from app.core.rerank import ReRanker
 import uuid
-# from transformers import AutoTokenizer, AutoModelForCausalLM
-# import torch
-# import os
+import google.generativeai as genai
+import os
 
 app = FastAPI(title="Vietnamese Law Chatbot", version="1.0.0")
 
@@ -22,13 +21,12 @@ except Exception:
 
 es = ESClient(config.ES_HOST, config.ES_INDEX, config.ES_USER, config.ES_PASS)
 reranker = ReRanker(config.RERANK_MODEL, config.USE_GPU)
-# LLM_MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-# tokenizer = AutoTokenizer.from_pretrained(LLM_MODEL)
-# llm = AutoModelForCausalLM.from_pretrained(
-#     LLM_MODEL,
-#     torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-#     device_map="cpu"
-# )
+
+if not config.GEMINI_API_KEY:
+    raise ValueError("GEMINI_API_KEY chưa được thiết lập trong .env!")
+
+genai.configure(api_key=config.GEMINI_API_KEY)
+
 
 W_SEM = config.HYBRID_W_SEM
 W_BM25 = config.HYBRID_W_BM25
@@ -149,57 +147,58 @@ def search(req: SearchRequest):
     reranked = reranker.rerank(req.query, hybrid_top)
     return {"mode": "hybrid_rerank", "results": reranked}
 
-# @app.post("/generate")
-# def generate(payload: dict):
-#     query = payload["query"]
-#     k = payload.get("k", 3)
+@app.post("/generate")
+def generate(payload: dict):
+    query = payload.get("query", "")
+    k = payload.get("k", 3)
 
-#     q_emb = embedder.encode_queries([query])
-#     scores, idxs = faiss_index.index.search(q_emb, 20)
+    q_emb = embedder.encode_queries([query])
+    scores, idxs = faiss_index.index.search(q_emb, 20)
 
-#     sem_hits = []
-#     for s, i in zip(scores[0], idxs[0]):
-#         doc_id = faiss_index.id_map[i]
-#         meta = faiss_index.meta_map[doc_id]
-#         sem_hits.append({"doc_id": doc_id, "text": meta["text"], "score_semantic": float(s)})
+    sem_hits = []
+    for s, i in zip(scores[0], idxs[0]):
+        doc_id = faiss_index.id_map[i]
+        meta = faiss_index.meta_map[doc_id]
+        sem_hits.append({"doc_id": doc_id, "text": meta["text"], "score_semantic": float(s)})
 
-#     bm_hits = es.search(query, k=20) if es else []
-#     bm_map = {d["doc_id"]: d for d in bm_hits}
+    bm_hits = es.search(query, k=20) if es else []
+    bm_map = {d["doc_id"]: d for d in bm_hits}
 
-#     W_SEM, W_BM25 = config.HYBRID_W_SEM, config.HYBRID_W_BM25
-#     pool = []
-#     for h in sem_hits:
-#         b = bm_map.get(h["doc_id"])
-#         bscore = b["score"] if b else 0.0
-#         h["score_bm25"] = float(bscore)
-#         h["score_hybrid"] = W_SEM * h["score_semantic"] + W_BM25 * bscore
-#         pool.append(h)
-#     pool.sort(key=lambda x: x["score_hybrid"], reverse=True)
-#     top_k = pool[:k]
+    W_SEM, W_BM25 = config.HYBRID_W_SEM, config.HYBRID_W_BM25
+    pool = []
+    for h in sem_hits:
+        b = bm_map.get(h["doc_id"])
+        bscore = b["score"] if b else 0.0
+        h["score_bm25"] = float(bscore)
+        h["score_hybrid"] = W_SEM * h["score_semantic"] + W_BM25 * bscore
+        pool.append(h)
 
-#     context = "\n".join([f"- {c['text']}" for c in top_k])
+    pool.sort(key=lambda x: x["score_hybrid"], reverse=True)
+    top_k = pool[:k]
 
-#     prompt = f"""
-# Bạn là trợ lý pháp lý thông minh. Hãy trả lời câu hỏi dựa trên các đoạn văn sau.
-# Nếu không đủ thông tin, hãy nói 'Tôi không chắc chắn dựa trên dữ liệu hiện có.'
+    context = "\n".join([f"- {c['text']}" for c in top_k])
 
-# Câu hỏi: {query}
+    prompt = f"""
+Bạn là một trợ lý pháp lý thông minh, chuyên trả lời câu hỏi dựa trên các đoạn luật tiếng Việt.
+Dưới đây là các đoạn văn bản pháp luật liên quan:
 
-# Các đoạn văn:
-# {context}
+{context}
 
-# Trả lời:
-# """
-#     inputs = tokenizer(prompt, return_tensors="pt").to(llm.device)
-#     outputs = llm.generate(
-#         **inputs,
-#         max_new_tokens=256,
-#         temperature=0.7,
-#         do_sample=True
-#     )
-#     answer = tokenizer.decode(outputs[0], skip_special_tokens=True)
+Câu hỏi: {query}
 
-#     return {
-#         "answer": answer.split("Trả lời:")[-1].strip(),
-#         "contexts": top_k
-#     }
+Hãy trả lời chính xác, ngắn gọn, và dẫn chiếu điều luật nếu có thể.
+Nếu không đủ thông tin, hãy nói rõ "Không chắc chắn dựa trên dữ liệu hiện có."
+"""
+
+    try:
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        answer = response.text.strip() if hasattr(response, "text") else str(response)
+    except Exception as e:
+        return {"error": f"Lỗi khi gọi Gemini API: {e}"}
+
+    return {
+        "query": query,
+        "answer": answer,
+        "contexts": top_k
+    }
