@@ -1,14 +1,10 @@
 from fastapi import FastAPI
-from app.settings import config
-from app.schemas import IndexRequest, SearchRequest
-from app.core.embedding import Embedder
-from app.core.index_faiss import FaissIndex
-from app.core.chunking import hierarchical_chunk
-from app.core.bm25_es import ESClient
-from app.core.rerank import ReRanker
+from app import config, IndexRequest, SearchRequest
+from app.core import Embedder, FaissIndex, ESClient, ReRanker, hierarchical_chunk
 import uuid
 import google.generativeai as genai
 import os
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Vietnamese Law Chatbot", version="1.0.0")
 
@@ -164,14 +160,27 @@ def generate(payload: dict):
     bm_hits = es.search(query, k=20) if es else []
     bm_map = {d["doc_id"]: d for d in bm_hits}
 
-    W_SEM, W_BM25 = config.HYBRID_W_SEM, config.HYBRID_W_BM25
+    # Chuẩn hóa BM25 scores về [0, 1]
+    bm_scores = [b["score"] for b in bm_hits if "score" in b]
+    if bm_scores:
+        bm_min, bm_max = min(bm_scores), max(bm_scores)
+        for b in bm_hits:
+            if "score" in b:
+                b["score_norm"] = (b["score"] - bm_min) / (bm_max - bm_min + 1e-8)
+    else:
+        bm_min, bm_max = 0, 1
+
+    bm_map = {d["doc_id"]: d for d in bm_hits}
     pool = []
     for h in sem_hits:
         b = bm_map.get(h["doc_id"])
-        bscore = b["score"] if b else 0.0
-        h["score_bm25"] = float(bscore)
-        h["score_hybrid"] = W_SEM * h["score_semantic"] + W_BM25 * bscore
-        pool.append(h)
+        bm_score = b["score_norm"] if b and "score_norm" in b else 0.0
+        hybrid_score = W_SEM * h["score_semantic"] + W_BM25 * bm_score
+        pool.append({
+            **h,
+            "score_bm25": float(bm_score),
+            "score_hybrid": float(hybrid_score)
+        })
 
     pool.sort(key=lambda x: x["score_hybrid"], reverse=True)
     top_k = pool[:k]
@@ -191,7 +200,7 @@ Nếu không đủ thông tin, hãy nói rõ "Không chắc chắn dựa trên d
 """
 
     try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        model = genai.GenerativeModel("models/gemini-2.5-flash")
         response = model.generate_content(prompt)
         answer = response.text.strip() if hasattr(response, "text") else str(response)
     except Exception as e:
@@ -202,3 +211,11 @@ Nếu không đủ thông tin, hãy nói rõ "Không chắc chắn dựa trên d
         "answer": answer,
         "contexts": top_k
     }
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)

@@ -20,16 +20,41 @@ class Embedder:
         self.normalize = normalize
         self.prefix = get_instruction_prefixes(model_name)
 
-    def encode_passages(self, texts: list[str], batch_size: int = 64) -> np.ndarray:
-        texts = [self.prefix["passage"] + t for t in texts]
-        return self.model.encode(
-            texts, convert_to_numpy=True,
-            normalize_embeddings=self.normalize, batch_size=batch_size
-        )
+    def encode_passages(self, texts: list[str], batch_size: int = 16) -> np.ndarray:
+        if not texts:
+            return np.empty((0, self.model.get_sentence_embedding_dimension()))
 
-    def encode_queries(self, texts: list[str], batch_size: int = 32) -> np.ndarray:
+        texts = [self.prefix["passage"] + t for t in texts]
+        all_embs = []
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            embs = self.model.encode(
+                batch,
+                convert_to_numpy=True,
+                normalize_embeddings=self.normalize,
+                batch_size=batch_size
+            )
+            all_embs.append(embs)
+
+        return np.vstack(all_embs)
+
+    def encode_queries(self, texts: list[str], batch_size: int = 16) -> np.ndarray:
+        if not texts:
+            return np.empty((0, self.model.get_sentence_embedding_dimension()))
+
         texts = [self.prefix["query"] + t for t in texts]
-        return self.model.encode(
-            texts, convert_to_numpy=True,
-            normalize_embeddings=self.normalize, batch_size=batch_size
-        )
+        all_embs = []
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            embs = self.model.encode(
+                batch,
+                convert_to_numpy=True,
+                normalize_embeddings=self.normalize,
+                batch_size=batch_size,
+                show_progress_bar=True
+            )
+            all_embs.append(embs)
+
+        return np.vstack(all_embs)

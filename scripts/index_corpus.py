@@ -1,10 +1,10 @@
 import ujson as json, uuid, os
 from app.settings import config
 from app.core.embedding import Embedder
-from app.core.chunking import simple_chunk
 from app.core.index_faiss import FaissIndex
 from app.core.bm25_es import ESClient
 from app.core.chunking import hierarchical_chunk
+import uuid
 
 def read_jsonl(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -21,7 +21,7 @@ def main():
     total_parents, total_children = 0, 0
 
     for row in read_jsonl("data/corpus.jsonl"):
-        rid = row.get("id") or str(uuid.uuid4())   # ID document (parent)
+        rid = row.get("id") or str(uuid.uuid4())   
         text = row["text"]
         meta = row.get("meta", {})
 
