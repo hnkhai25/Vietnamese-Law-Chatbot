@@ -26,6 +26,7 @@ class ApplicationConfig(BaseSettings):
     USE_GPU: bool
 
     GEMINI_API_KEY: str
+    SCORE_THRESHOLD : float 
 
     class Config:
         env_file = "env.example"

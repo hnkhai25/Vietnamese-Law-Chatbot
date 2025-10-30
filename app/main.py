@@ -80,7 +80,7 @@ def search(req: SearchRequest):
 
     sem_hits = []
     for s, idx in zip(sem_scores, sem_idxs):
-        if idx == -1:
+        if idx == -1 or s < config.SCORE_THRESHOLD:
             continue
         doc_id = faiss_index.id_map[idx]
         meta = faiss_index.meta_map[doc_id]
@@ -95,6 +95,7 @@ def search(req: SearchRequest):
         return {"mode": "semantic", "results": sem_hits[:req.k]}
 
     bm_hits = es.search(req.query, k=max(req.k, 20))
+    bm_hits = [b for b in bm_hits if b.get("score", 0.0) >= config.SCORE_THRESHOLD]
 
     if req.mode == "bm25":
         return {"mode": "bm25", "results": bm_hits}
@@ -114,6 +115,8 @@ def search(req: SearchRequest):
         bm = bm_map.get(h["doc_id"])
         bm_score = bm["score"] if bm and "score" in bm else 0.0
         final = W_SEM * h["score_semantic"] + W_BM25 * bm_score
+        if final < config.SCORE_THRESHOLD:
+            continue
         hybrid.append({
             **h,
             "score_bm25": float(bm_score),
@@ -141,6 +144,7 @@ def search(req: SearchRequest):
         return {"mode": "hybrid", "results": hybrid_top[:req.k]}
 
     reranked = reranker.rerank(req.query, hybrid_top)
+    reranked = [r for r in reranked if r.get("score", 1.0) >= config.SCORE_THRESHOLD]
     return {"mode": "hybrid_rerank", "results": reranked}
 
 @app.post("/generate")
@@ -181,7 +185,7 @@ def generate(payload: dict):
             "score_bm25": float(bm_score),
             "score_hybrid": float(hybrid_score)
         })
-
+    pool = [p for p in pool if p["score_hybrid"] >= config.SCORE_THRESHOLD]
     pool.sort(key=lambda x: x["score_hybrid"], reverse=True)
     top_k = pool[:k]
 
