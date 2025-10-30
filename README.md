@@ -157,6 +157,6 @@ npm start
 
 Giao diện minh họa hoạt động của hệ thống **Vietnamese Law Chatbot**:
 
-![Demo](assets\image.png)
+![Demo](./assets/image.png)
 
 *Hình minh họa quá trình truy vấn và sinh câu trả lời dựa trên RAG pipeline.*
