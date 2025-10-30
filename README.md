@@ -153,6 +153,10 @@ npm start
 | GET    | /health   | Kiểm tra trạng thái server                          |
 
 ---
+## 8. Demo
 
+Giao diện minh họa hoạt động của hệ thống **Vietnamese Law Chatbot**:
 
+![Demo](assets\image.png)
 
+*Hình minh họa quá trình truy vấn và sinh câu trả lời dựa trên RAG pipeline.*
